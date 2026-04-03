@@ -6,7 +6,7 @@ import { Locale } from "@/util/locale"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useDialog } from "../../ui/dialog"
-import type { PromptInfo } from "@tui/component/prompt/history"
+import { usePromptHistory, type PromptInfo } from "@tui/component/prompt/history"
 import { strip } from "@tui/component/prompt/part"
 
 export function DialogForkFromTimeline(props: { sessionID: string; onMove: (messageID: string) => void }) {
@@ -14,6 +14,17 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
   const dialog = useDialog()
   const sdk = useSDK()
   const route = useRoute()
+  const history = usePromptHistory()
+
+  const prompt = (id: string) =>
+    (sync.data.part[id] ?? []).reduce(
+      (agg, part) => {
+        if (part.type === "text" && !part.synthetic) agg.input += part.text
+        if (part.type === "file" || part.type === "agent") agg.parts.push(strip(part))
+        return agg
+      },
+      { input: "", parts: [] as PromptInfo["parts"] },
+    )
 
   onMount(() => {
     dialog.setSize("large")
@@ -37,21 +48,21 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
             sessionID: props.sessionID,
             messageID: message.id,
           })
-          const parts = sync.data.part[message.id] ?? []
-          const initialPrompt = parts.reduce(
-            (agg, part) => {
-              if (part.type === "text") {
-                if (!part.synthetic) agg.input += part.text
-              }
-              if (part.type === "file") agg.parts.push(strip(part))
-              return agg
-            },
-            { input: "", parts: [] as PromptInfo["parts"] },
-          )
+          const next = forked.data?.id
+          if (!next) return
+
+          for (const msg of sync.data.message[props.sessionID] ?? []) {
+            if (msg.id === message.id) break
+            if (msg.role !== "user") continue
+            const item = prompt(msg.id)
+            if (!item.input && !item.parts.length) continue
+            history.append(item, next)
+          }
+
           route.navigate({
-            sessionID: forked.data!.id,
+            sessionID: next,
             type: "session",
-            initialPrompt,
+            initialPrompt: prompt(message.id),
           })
           dialog.clear()
         },
