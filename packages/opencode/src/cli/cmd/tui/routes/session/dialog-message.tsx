@@ -4,7 +4,7 @@ import { DialogSelect } from "@tui/ui/dialog-select"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { Clipboard } from "@tui/util/clipboard"
-import type { PromptInfo } from "@tui/component/prompt/history"
+import { usePromptHistory, type PromptInfo } from "@tui/component/prompt/history"
 import { strip } from "@tui/component/prompt/part"
 
 export function DialogMessage(props: {
@@ -16,6 +16,17 @@ export function DialogMessage(props: {
   const sdk = useSDK()
   const message = createMemo(() => sync.data.message[props.sessionID]?.find((x) => x.id === props.messageID))
   const route = useRoute()
+  const history = usePromptHistory()
+
+  const prompt = (id: string) =>
+    (sync.data.part[id] ?? []).reduce(
+      (agg, part) => {
+        if (part.type === "text" && !part.synthetic) agg.input += part.text
+        if (part.type === "file" || part.type === "agent") agg.parts.push(strip(part))
+        return agg
+      },
+      { input: "", parts: [] as PromptInfo["parts"] },
+    )
 
   return (
     <DialogSelect
@@ -34,20 +45,7 @@ export function DialogMessage(props: {
               messageID: msg.id,
             })
 
-            if (props.setPrompt) {
-              const parts = sync.data.part[msg.id]
-              const promptInfo = parts.reduce(
-                (agg, part) => {
-                  if (part.type === "text") {
-                    if (!part.synthetic) agg.input += part.text
-                  }
-                  if (part.type === "file") agg.parts.push(strip(part))
-                  return agg
-                },
-                { input: "", parts: [] as PromptInfo["parts"] },
-              )
-              props.setPrompt(promptInfo)
-            }
+            if (props.setPrompt) props.setPrompt(prompt(msg.id))
 
             dialog.clear()
           },
@@ -77,29 +75,28 @@ export function DialogMessage(props: {
           value: "session.fork",
           description: "create a new session",
           onSelect: async (dialog) => {
+            const msg = message()
+            if (!msg) return
+
             const result = await sdk.client.session.fork({
               sessionID: props.sessionID,
               messageID: props.messageID,
             })
-            const initialPrompt = (() => {
-              const msg = message()
-              if (!msg) return undefined
-              const parts = sync.data.part[msg.id]
-              return parts.reduce(
-                (agg, part) => {
-                  if (part.type === "text") {
-                    if (!part.synthetic) agg.input += part.text
-                  }
-                  if (part.type === "file") agg.parts.push(part)
-                  return agg
-                },
-                { input: "", parts: [] as PromptInfo["parts"] },
-              )
-            })()
+            const next = result.data?.id
+            if (!next) return
+
+            for (const item of sync.data.message[props.sessionID] ?? []) {
+              if (item.id === props.messageID) break
+              if (item.role !== "user") continue
+              const promptInfo = prompt(item.id)
+              if (!promptInfo.input && !promptInfo.parts.length) continue
+              history.append(promptInfo, next)
+            }
+
             route.navigate({
-              sessionID: result.data!.id,
+              sessionID: next,
               type: "session",
-              initialPrompt,
+              initialPrompt: prompt(msg.id),
             })
             dialog.clear()
           },
